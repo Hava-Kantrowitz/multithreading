@@ -30,6 +30,16 @@ typedef struct sortArgs {
 	int fileSize; 
 } sortArgs;
 
+void
+printSortArgs(sortArgs args) {
+	printf("The id number of this job is %d, ", args.pnum);
+	printf("It's data is "); 
+	for (int i = 0; i < 2; i++) {
+		printf("%f ", args.data[i]);
+	}
+	printf("\n"); 
+}
+
 int
 comparing(const void* first, const void* second) {
 	float one = *((float*)first);
@@ -47,20 +57,26 @@ qsort_floats(floats* xs)
 floats*
 sample(float* data, long size, int P)
 {
+
     // sample the input data, per the algorithm description
     int numSort = 3 * (P-1);
-
     srand(time(0));
 
-    floats* randomFloats = make_floats(numSort);
+    floats* randomFloats = make_floats(0);
+
     for (int i = 0; i < numSort; i++) {
 	int randyNum = rand() % size; 
 	floats_push(randomFloats, *(data + randyNum)); 
     }
 
+    //printf("The array of random floats is ");
+    //floats_print(randomFloats); 
     qsort_floats(randomFloats);
 
-    floats* sampleFloats = make_floats(P-1);
+    //printf("The qsorted floats are ");
+    //floats_print(randomFloats); 
+
+    floats* sampleFloats = make_floats(0);
     for (int i = 0; i < (P-1); i++) {
 	    float firstFloat = randomFloats->data[(i*3)];
 	    float secondFloat = randomFloats->data[(i*3)+1];
@@ -69,7 +85,7 @@ sample(float* data, long size, int P)
 	    floats_push(sampleFloats, median);
     } 
 
-    floats* finalFloats = make_floats(P-1);
+    floats* finalFloats = make_floats(0);
     floats_push(finalFloats, 0);
     for (int i = 0; i < sampleFloats->size; i++) {
 	   floats_push(finalFloats, sampleFloats->data[i]);
@@ -79,6 +95,7 @@ sample(float* data, long size, int P)
     free_floats(randomFloats);
     free_floats(sampleFloats); 
 
+    //printf("The array of sample floats is "); 
     //floats_print(finalFloats);  
  
     return finalFloats;
@@ -89,22 +106,28 @@ sort_worker(void* arg)
 {
 
     sortArgs args = *((sortArgs*) arg); 
+    int threadNum = args.pnum;
+    free(arg); 
+
+    //printSortArgs(args); 
 
     floats* xs = make_floats(0);
     
     // select the floats to be sorted by this worker
     for (long i = 0; i < args.size; i++) {
 	float nextNum = args.data[i];
-	if (nextNum >= args.samps->data[args.pnum] && nextNum < args.samps->data[args.pnum+1]) {
+	if (nextNum >= args.samps->data[threadNum] && nextNum < args.samps->data[threadNum+1]) {
 		floats_push(xs, nextNum);
 	}
     }
 
-    printf("%d: start %.04f, count %ld\n", args.pnum, args.samps->data[args.pnum], xs->size);
+    //printf("I am the %d worker\n", threadNum); 
+
+    printf("%d: start %.04f, count %ld\n", threadNum, args.samps->data[threadNum], xs->size);
 
     //write number of items to shared array at pnum
-    args.sizes[args.pnum] = xs->size;
-    //printf("Size p is %li\n", sizes[pnum]); 
+    args.sizes[threadNum] = xs->size;
+    //printf("Size p is %li\n", args.sizes[threadNum]); 
 
     qsort_floats(xs);
     //printf("Sorted floats is ");
@@ -114,35 +137,38 @@ sort_worker(void* arg)
     barrier_wait(args.bb); 
     
     int start = 0;
-    for (int i = 0; i <= args.pnum-1; i++) {
+    for (int i = 0; i <= threadNum-1; i++) {
 	start += args.sizes[i];
     }
 
     int end = 0;
-    for (int i = 0; i <= args.pnum; i++) {
+    for (int i = 0; i <= threadNum; i++) {
 	    end += args.sizes[i];
     }
     end--; 
 
-    //printf("Start value is %d for process %d\n", start, args.pnum);
-    //printf("End value is %d for process %d\n", end, args.pnum); 
+    //printf("Start value is %d for process %d\n", start, threadNum);
+    //printf("End value is %d for process %d\n", end, threadNum); 
 
     //barrier_wait(args.bb); 
     
     if (start == 0) {
-	    int fl = open(args.file, O_CREAT | O_WRONLY | O_APPEND, 0777);
-	    long fileSize = args.size; 
+	    int fl = open(args.file, O_CREAT | O_WRONLY, 0777);
+	    long fileSize = args.size;
+	    //printf("Filesize should be %li\n", fileSize);  
 	    write(fl, &fileSize, sizeof(long)); 
 	    close(fl);  
     }
 
-    int fo = open(args.file, O_CREAT | O_WRONLY | O_APPEND, 0777);
+    int fo = open(args.file, O_CREAT | O_WRONLY, 0777);
 
     int j = 0;
     for (int i = start; i <= end; i++) {
 	//args.data[i] = xs->data[j];
+	//printf("Thread num is %d. Data at %d is %f\n", threadNum, i, xs->data[j]);	
 	float message = xs->data[j];
-	lseek(fo, i+1, SEEK_SET); 
+	int offset = (i * sizeof(float)) + sizeof(long); 
+	lseek(fo, offset, SEEK_SET); 
 	write(fo, &message, sizeof(float)); 
 	j++;
     }
@@ -158,22 +184,22 @@ run_sort_workers(float* data, long size, int P, floats* samps, long* sizes, barr
 {
     pthread_t threads[P];
 
-    sortArgs* job = malloc(sizeof(sortArgs));
-    job->data = data;
-    job->size = size;
-    job->P = P;
-    job->samps = samps;
-    job->sizes = sizes;
-    job->bb = bb;
-    job->file = file;
-    job->fileSize = fileSize;  
-
 
     // spawn P threads, each running sort_worker
     for (int i = 0; i < P; i++) {
-	    job->pnum = i; 
-	    int rv = pthread_create(&(threads[i]), 0, &sort_worker, job);
-	    check_rv(rv); 
+	    //sleep(1); 
+		sortArgs* job = malloc(sizeof(sortArgs));
+    		job->data = data;
+    		job->size = size;
+    		job->P = P;
+    		job->samps = samps;
+    		job->sizes = sizes;
+    		job->bb = bb;
+    		job->file = file;
+    		job->fileSize = fileSize; 
+	        job->pnum = i;
+	    	int rv = pthread_create(&(threads[i]), NULL, &sort_worker, job);
+	    	check_rv(rv); 
     }
 
     for (int ii = 0; ii < P; ++ii) {
@@ -181,7 +207,6 @@ run_sort_workers(float* data, long size, int P, floats* samps, long* sizes, barr
         check_rv(rv);
     }
 
-    free(job); 
 
 }
 
@@ -231,7 +256,7 @@ main(int argc, char* argv[])
     fread(&count, sizeof(long), 1, fd); 
     //printf("The count is %ld\n", count); 
     
-    float data; 
+    float data;
     for (int i = 0; i < count; i++) {
 	    fread(&data, sizeof(float), 1, fd);
 	    floats_push(my_floats, data); 
@@ -261,7 +286,7 @@ main(int argc, char* argv[])
 
     free_barrier(bb);
     free(sizes);
-    //free(my_floats); 
+    free_floats(my_floats); 
 
     return 0;
 }

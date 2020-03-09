@@ -14,20 +14,30 @@ make_barrier(int nn)
 {
     barrier* bb = malloc(sizeof(barrier));
     assert(bb != 0);
-
-    bb->count = -7;  // TODO: These can't be right.
-    bb->seen  = 342;
+    pthread_mutex_init(&bb->mute, NULL);
+    pthread_cond_init(&bb->condv, NULL); 
+    bb->count = nn;
+    bb->seen  = 0;
     return bb;
 }
 
 void
 barrier_wait(barrier* bb)
 {
-    while (1) {
-        sleep(1);
-        // TODO: Stop waiting.
-        // TODO: Don't sleep here.
-    }
+
+	pthread_mutex_lock(&bb->mute);
+	bb->seen++;
+	if (bb->seen == bb->count) {
+		pthread_cond_broadcast(&bb->condv);
+	}
+	else {
+		while (bb->seen != bb->count) {
+			pthread_cond_wait(&bb->condv, &bb->mute);
+		}
+	}
+
+	pthread_mutex_unlock(&bb->mute); 
+    
 }
 
 void
